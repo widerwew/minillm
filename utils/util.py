@@ -1,18 +1,25 @@
 import torch
 import torch.nn as nn
 
-class RMSNrom(nn.Module):
-    def __init__(self, dim, shift=False, alpha=0.2):
-        self.dim = dim
-        self.shift = shift
-        self.alpha = alpha
-        self.paras = nn.Parameter(torch.zeros(dim))
+class LayerNorm(nn.Module):
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+        self.bias = nn.Parameter(torch.zeros(dim))
+        self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x):
-        batch, seq, token, dim = x.shape
-        x = x.view(batch, seq, -1)
-        x_norm = x.norm(dim=-1, keepdim=True)
-        x = x / x_norm
-        if self.shift:
-            x = self.alpha * x + self.paras
-        return x
+        mean = x.mean(-1, keepdim=True)
+        std = x.std(-1, keepdim=True)
+        return self.weight * (x - mean) / (std + self.eps) + self.bias
+
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x):
+        norm = x.pow(2).sum(-1, keepdim=True).sqrt()
+        return x / (norm + self.eps) * self.weight
