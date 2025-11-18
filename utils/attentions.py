@@ -30,6 +30,7 @@ class Attention(nn.Module):
         attn_scores = attn_weights @ value
         return attn_scores
 
+# MHA
 class MultiHeadAttention(nn.Module):
     def __init__(self, heads, din, dout, bias=False, causal=True, flash_attention=False, context_length=8192):
         super().__init__()
@@ -68,14 +69,161 @@ class MultiHeadAttention(nn.Module):
 
         attn_weights = (attn_weights / (attn_weights.shape[-1] ** 0.5)).softmax(dim=-1)
         attn_scores = attn_weights @ value
-        attn_scores = attn_scores.transpose(2, 1).contiguous().view(batch_size, token_len, -1)
+        attn_scores = attn_scores.transpose(2, 1).contiguous().view(batch_size, token_len, -1)# Why not weight value of sum？
         attn_scores = self.out_proj(attn_scores)
         return attn_scores
+
+# MHA with pytorch Scale pot product
+class MultiHeadAttentionByPspp(nn.Module):
+    def __init__(self, heads, din, dout, bias=False, dropout=0.0):
+        super().__init__()
+        self.heads = heads
+        self.din = din
+        self.dout = dout
+        assert dout % heads == 0, "dout must be divisible by heads"
+        self.head_dim = dout // heads
+        self.qkv = nn.Linear(self.din, self.dout*3, bias=bias)
+        self.dropout = dropout
+        self.proj = nn.Linear(self.dout, self.dout, bias=bias)
+
+    def forward(self, x):
+        batch_size, token_len, dim = x.shape
+        qkv = self.qkv(x)
+        qkv = qkv.view(batch_size, token_len, 3, self.heads, self.head_dim)
+
+        # batch_size, token_len, 3, heads, head_dim ---> 3, batch_size, heads, token_len, head_dim
+        qkv = qkv.permute(2, 0, 3, 1, 4).contiguous()
+        query, key, value = qkv
+        attention_scores = nn.functional.scaled_dot_product_attention(query, key, value, dropout_p=self.dropout, is_causal=True, attn_mask=None)
+        attention_scores = attention_scores.transpose(2, 1).contiguous().view(batch_size, token_len, -1)
+        attention_scores = self.proj(attention_scores)
+        return attention_scores
+
+
+#MQA
+# multi query heads use a common key and value head.
+class MultiQueryAttention(nn.Module):
+    def __init__(self, heads, din, dout, bias=False, dropout=0.0, causal=True, context_length=8192):
+        super().__init__()
+        self.heads = heads
+        self.din = din
+        self.dout = dout
+        assert dout % heads == 0, "dout must be divisible by heads"
+        self.head_dim = dout // heads
+        self.querys = nn.Linear(self.din, self.dout, bias=bias)
+        self.keys = nn.Linear(self.din, self.head_dim, bias=bias)
+        self.values = nn.Linear(self.din, self.head_dim, bias=bias)
+        self.dropout = nn.Dropout(dropout)
+        self.out_proj = nn.Linear(self.dout, self.dout, bias=bias)
+        self.causal = causal
+        if self.causal:
+            self.register_buffer("causal_mask", torch.triu(torch.ones(context_length, context_length), diagonal=1))
+
+    def forward(self, x):
+        batch_size, token_len, dim = x.shape
+        query = self.querys(x)
+        key = self.keys(x)
+        value = self.values(x)
+
+        #batch_size, token_len, heads, head_dim ---> batch_size, heads, token_len, head_dim
+        query = query.view(batch_size, token_len, self.heads, self.head_dim).transpose(1, 2)
+        attention_scores = query @ key.transpose(-2, -1)
+        if self.causal:
+            attention_scores.masked_fill(self.causal_mask[:token_len, :token_len].bool(), float('-inf'))
+
+        attention_scores = (attention_scores / (attention_scores.shape[-1] ** 0.5)).softmax(dim=-1)
+        attention_scores = self.dropout(attention_scores)
+
+        # batch_size, heads, token_len, head_dim
+        attention_scores = attention_scores @ value
+        attention_scores = attention_scores.transpose(1, 2).contiguous().view(batch_size, token_len, -1)
+        attention_scores = self.out_proj(attention_scores)
+        return attention_scores
+
+
+#GQA
+# multi group query heads share a common key and value
+class GroupQueryAttention(nn.Module):
+    def __init__(self, groups, heads, din, dout, bias=False, dropout=0.0, causal=True, context_length=8192):
+        super().__init__()
+        self.heads = heads
+        self.din = din
+        self.dout = dout
+        self.groups = groups
+        assert heads % groups == 0, "heads must be divisible by groups"
+        self.head_nums_per_group = heads // groups
+        assert dout % heads == 0, "dout must be divisible by heads"
+        self.head_dim = dout // heads
+        self.querys = nn.Linear(self.din, self.dout, bias=bias)
+        self.keys = nn.Linear(self.din, self.groups * self.head_dim, bias=bias)
+        self.values = nn.Linear(self.din, self.groups * self.head_dim, bias=bias)
+        self.dropout = nn.Dropout(dropout)
+        self.out_proj = nn.Linear(self.dout, self.dout, bias=bias)
+        self.causal = causal
+        if self.causal:
+            self.register_buffer("causal_mask", torch.triu(torch.ones(context_length, context_length), diagonal=1))
+
+    def forward(self, x):
+        batch_size, token_len, dim = x.shape
+        query = self.querys(x)
+        key = self.keys(x)
+        value = self.values(x)
+        query = query.view(batch_size, token_len, self.groups, self.head_nums_per_group, self.head_dim).permute(0, 2, 3, 1, 4).contiguous()
+        key = key.view(batch_size, token_len, self.groups, self.head_dim).transpose(1, 2)
+        value = value.view(batch_size, token_len, self.groups, self.head_dim).transpose(1, 2)
+
+        attention_scores = query @ key.transpose(-2, -1).unsqueeze(2)
+        if self.causal:
+            attention_scores = attention_scores.masked_fill(self.causal_mask[:token_len, :token_len].bool(), float('-inf'))
+
+        attention_scores = (attention_scores / (attention_scores.shape[-1] ** 0.5)).softmax(dim=-1)
+        attention_scores = self.dropout(attention_scores)
+
+        attention_scores = attention_scores @ value.unsqueeze(2)
+        attention_scores = attention_scores.permute(0, 3, 1, 2, 4).contiguous().view(batch_size, token_len, -1)
+        attention_scores = self.out_proj(attention_scores)
+        return attention_scores
 
 
 
 if __name__ == "__main__":
+
+    import time
     multi_head_attn = Attention(128, 256, causal=False, flash_attention=False, context_length=512)
     data = torch.randn(1, 11, 128)
+    time_start = time.time()
     res = multi_head_attn(data)
+    end = time.time()
+    print(f"Attention cost time: {round((end - time_start)*1000, 2)}ms")
+    print(res.shape)
+
+    attn = torch.randn(5, 5)
+    triu_data = torch.triu(torch.ones(5, 5), diagonal=1).bool()
+    print(triu_data)
+    attn = attn.masked_fill(triu_data, float('-inf'))
+    attn = attn.softmax(dim=-1)
+    print(attn)
+
+    multi_head_attn = MultiHeadAttentionByPspp(8,128, 256)
+    data = torch.randn(1, 11, 128)
+    time_start = time.time()
+    res = multi_head_attn(data)
+    end = time.time()
+    print(f"MultiHeadAttentionByPspp cost time: {round((end - time_start) * 1000, 2)}ms")
+    print(res.shape)
+
+    multi_head_attn = MultiQueryAttention(8, 128, 256)
+    data = torch.randn(1, 11, 128)
+    time_start = time.time()
+    res = multi_head_attn(data)
+    end = time.time()
+    print(f"MultiQueryAttention cost time: {round((end - time_start) * 1000, 2)}ms")
+    print(res.shape)
+
+    multi_head_attn = GroupQueryAttention(2, 8, 128, 256)
+    data = torch.randn(1, 12, 128)
+    time_start = time.time()
+    res = multi_head_attn(data)
+    end = time.time()
+    print(f"GroupQueryAttention cost time: {round((end - time_start) * 1000, 2)}ms")
     print(res.shape)
