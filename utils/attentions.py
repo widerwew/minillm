@@ -99,6 +99,72 @@ class MultiHeadAttentionByPspp(nn.Module):
         attention_scores = self.proj(attention_scores)
         return attention_scores
 
+#MLA
+class MultiHeadLatentAttention(nn.Module):
+    def __init__(self, heads, din, dout, latent_dim,  bias=False, dropout=0.0):
+        super().__init__()
+        self.heads = heads
+        self.din = din
+        self.dout = dout
+        assert dout % heads == 0, "dout must be divisible by heads"
+        self.head_dim = dout // heads
+        self.latent_dim = latent_dim
+        self.query = nn.Linear(self.din, self.dout, bias=bias)
+        self.latent_layer = nn.Linear(self.din, self.latent_dim, bias=bias)
+        self.up_layer = nn.Linear(self.latent_dim, 2 * self.dout, bias=bias)
+        self.dropout = nn.Dropout(dropout)
+        self.proj = nn.Linear(self.dout, self.dout, bias=bias)
+        self.register_buffer("cache_kv", None)
+        self.ptr_index = 0
+
+    def _reset_cache(self):
+        self.cache_kv = None
+        self.ptr_index = 0
+
+    def forward(self, x, use_cache=False):
+        batch_size, token_len, dim = x.shape
+        q_state = self.query(x)
+        kv_latent = self.latent_layer(x)
+        #--------------------缓存kv-----------------
+        if use_cache:
+            if self.cache_kv is None:
+                self.cache_kv = kv_latent
+            else:
+                self.cache_kv = torch.cat([self.cache_kv, kv_latent], dim=0)
+        else:
+            self.cache_kv = kv_latent
+
+        kv_state = self.up_layer(self.cache_kv)
+        k_state, v_state = kv_state.view(batch_size, -1, 2, self.dout).permute(2, 0, 1, 3)
+
+        q_state = q_state.view(batch_size, token_len, self.heads, self.head_dim).transpose(1, 2)
+        k_state = k_state.view(batch_size, -1, self.heads, self.head_dim).transpose(1, 2)
+        v_state = v_state.view(batch_size, -1, self.heads, self.head_dim).transpose(1, 2)
+
+        attn_weights = q_state @ k_state.transpose(-2, -1)
+
+        #-------------------attn mask----------------------
+        num_token_q = attn_weights.shape[-2]
+        num_token_k = attn_weights.shape[-1]
+        if use_cache:
+            q_positions = torch.arange(self.ptr_index, self.ptr_index+num_token_q, dtype=torch.long, device=q_state.device)
+            self.ptr_index += num_token_q
+        else:
+            q_positions = torch.arange(num_token_q, dtype=torch.long, device=q_state.device)
+            self.ptr_index = num_token_q
+        k_positions = torch.arange(num_token_k, dtype=torch.long, device=k_state.device)
+        att_mask = q_positions.unsqueeze(1) < k_positions.unsqueeze(0)
+        attn_weights = attn_weights.masked_fill(att_mask, float('-inf'))
+
+        attn_weights = (attn_weights / (attn_weights.shape[-1] ** 0.5)).softmax(dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        # batch_size, heads, num_token_q, head_dim
+        attn_scores = attn_weights @ v_state
+        attn_scores = attn_scores.transpose(2, 1).contiguous().view(batch_size, token_len, -1)
+        attn_scores = self.proj(attn_scores)
+        return attn_scores
+
 
 #MQA
 # multi query heads use a common key and value head.
@@ -226,4 +292,12 @@ if __name__ == "__main__":
     res = multi_head_attn(data)
     end = time.time()
     print(f"GroupQueryAttention cost time: {round((end - time_start) * 1000, 2)}ms")
+    print(res.shape)
+
+    multi_head_attn = MultiHeadLatentAttention(8, 128, 256, 64)
+    data = torch.randn(1, 12, 128)
+    time_start = time.time()
+    res = multi_head_attn(data, use_cache=True)
+    end = time.time()
+    print(f"MultiHeadLatentAttention cost time: {round((end - time_start) * 1000, 2)}ms")
     print(res.shape)

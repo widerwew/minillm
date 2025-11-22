@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 
@@ -57,7 +59,7 @@ class MOEFFN(nn.Module):
         #----2. 统计每个专家的权重和
         #----3. 计算平均每个专家被选择的平均权重
         #-----------------结束-------------------
-        x = x.reshape(batch_size * token_num, in_dim)
+        x = x.view(batch_size * token_num, in_dim)
         expert_top_index = topk_index.unique()
         for expert_index in expert_top_index:
             mask = (topk_index == int(expert_index.item()))
@@ -69,7 +71,7 @@ class MOEFFN(nn.Module):
             result = mask_scores.unsqueeze(1) * value
             out_moe[mask_index, :] += result
 
-        out_moe = out_moe.reshape(batch_size, token_num, in_dim)
+        out_moe = out_moe.view(batch_size, token_num, in_dim)
         return out_moe
 
 
