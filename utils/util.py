@@ -1,5 +1,4 @@
 import math
-
 import torch
 import torch.nn as nn
 
@@ -74,6 +73,36 @@ class MOEFFN(nn.Module):
         out_moe = out_moe.view(batch_size, token_num, in_dim)
         return out_moe
 
+def sinusoidal_positional_encoding(dim, max_len, theta_para=10000, dtype=torch.float32):
+    """
+    :param dim: input dimension
+    :param max_len:  input sequence max length
+    :param theta:
+    :return:
+    positional encoding = [sin(t / (10000**(2i/d))) : cos(t / (10000 ** (2i/d))]
+    """
+    simu_positional_encoding = torch.zeros(max_len, dim, dtype=dtype)
+    theta = 1 / torch.pow(theta_para, torch.arange(0, dim, 2, dtype=dtype) / dim)
+    t = torch.arange(max_len, dtype=dtype).to(theta.device)
+    theta_table = torch.outer(t, theta)
+    simu_positional_encoding[:, 0::2] = torch.sin(theta_table)
+    simu_positional_encoding[:, 1::2] = torch.cos(theta_table)
+    return simu_positional_encoding
+
+def apply_rope_position_encoding(x, theta_para=10000):
+    batch_size, token_num, in_dim = x.shape
+    rope_pos_embeded = torch.zeros_like(x)
+    simu_pos_embed = sinusoidal_positional_encoding(in_dim, max_len=token_num, theta_para=10000, dtype=x.dtype)
+    cos_matrix = simu_pos_embed[:, 1::2]
+    sin_matrix = simu_pos_embed[:, 0::2]
+
+    x_odd = x[..., 0::2]
+    x_even = x[..., 1::2]
+
+    # 旋转操作
+    rope_pos_embeded[..., 0::2] = x_odd * cos_matrix - x_even * sin_matrix
+    rope_pos_embeded[..., 1::2] = x_odd * cos_matrix + x_even * sin_matrix
+    return rope_pos_embeded
 
 
 if __name__=="__main__":
@@ -84,3 +113,11 @@ if __name__=="__main__":
     print("ffn.shape:", res_ffn.shape)
     res = moeffn(x)
     print("moe_ffn.shape:", res.shape)
+
+    pos_emb = sinusoidal_positional_encoding(64, 128, dtype=torch.float32)
+    print("pos_emb.shape:", pos_emb.shape)
+
+    data = torch.randn(3, 5, 256)
+    pos_embed = apply_rope_position_encoding(data, 10000)
+    print("apply_rope pos_embed.shape:", pos_embed.shape)
+
