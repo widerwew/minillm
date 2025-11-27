@@ -33,5 +33,5 @@ class PretrainedDataset(Dataset):
         input_ids = token_result["input_ids"]
         X = input_ids[:, :-1]
         Y = input_ids[:, 1:]
-        mask_loss = (X!=tokenizer.eos_token_id)
+        mask_loss = (X!=tokenizer.pad_token_id)
         return X, Y, mask_loss

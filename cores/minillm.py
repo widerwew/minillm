@@ -6,9 +6,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import torch
 import torch.nn as nn
-from transformers import PretrainedConfig
+from transformers import PretrainedConfig, GenerationMixin, PreTrainedModel
 from transformers.activations import ACT2FN
 from transformers.cache_utils import DynamicCache
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from utils.util import RMSNorm, MOEFFN, FFN, apply_rope_position_encoding, sinusoidal_positional_encoding
 from utils.attentions import MultiHeadLatentAttention, MultiHeadAttentionByPspp
@@ -89,12 +90,54 @@ class MiniLLM(nn.Module):
         hidden_states = self.layer_norm(hidden_states)
         return hidden_states, attn_outputs
 
+class MiniLLMForCasualModel(PreTrainedModel, GenerationMixin):
+    config_class = MiniLLMConfig
+    base_model_prefix = "minillm"
+    supports_gradient_checkpointing = True
+    def __init__(self, config:MiniLLMConfig, loss_fn=nn.CrossEntropyLoss()):
+        super().__init__()
+        self.config = config
+        self.model = MiniLLM(config)
+        # lm_head   必须要有的
+        self.lm_head = nn.Linear(self.config.embed_dim, self.config.vocab_size)
+        self.lm_head.weight = self.model.embed.weight
+        self.loss_fn = loss_fn
+
+    # It's import for causal model, and exec before forward
+    def prepare_inputs_for_generation(self, input_ids, past_key_value=None, attention_mask=None, **kwargs):
+        # 如果有缓存，只取最后一个token输入即可
+        if past_key_value is not None:
+            input_ids = input_ids[:, -1:]
+        return {"input_ids": input_ids, "past_key_value": past_key_value, "attention_mask": attention_mask, "use_cached": kwargs.get("use_cached")}
+
+
+    def forward(self, input_ids, attention_mask=None, past_key_values=None, use_cached=False, labels=None, loss_mask=None, **kwargs):
+        hidden_states, attn_outputs = self.model(input_ids, attention_mask, past_key_values, use_cached)
+        # logits.shape is [batch_size, seq_len, vocabulary]
+        logits = self.lm_head(hidden_states)
+
+        loss = None
+        if labels is not None:
+            loss = self.loss_fn(logits, labels)
+            loss = (loss * loss_mask).sum() / loss_mask.sum()
+
+        return CausalLMOutputWithPast(loss=loss, logits=logits, hidden_states=hidden_states, **kwargs)
 
 
 if __name__ == '__main__':
-    mini_config = MiniLLMConfig('./minillm_config.json')
+    mini_config = MiniLLMConfig('../configs/minillm_config.json')
     print("----------miniLLM Model-------------")
     model = MiniLLM(mini_config)
     data = torch.randint(0, 6399, size=(1, 13))
     hidden_states, _ = model(data, use_cached=True)
     print("LLM hidden_states.shape:", hidden_states.shape)
+
+    print("----------Test Model--------------")
+    layer = nn.Embedding(5, 3)
+    print(layer)
+    print(layer.weight)
+
+    data = torch.randint(0, 4, size=(1, 2))
+    print(data)
+    res = layer(data)
+    print(res)
