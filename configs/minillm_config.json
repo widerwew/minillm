@@ -13,5 +13,5 @@
   "num_layers": 16,
   "max_len": 8192,
   "theta_para": 10000,
-  "lr": 1e-4
+  "learning_rate": 1e-4
 }

@@ -1,12 +1,9 @@
 import os
 import sys
-
-from minillm.cores.minillm import MiniLLMConfig
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path[0] = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 from datasets.dataset import PretrainedDataset
-from cores.minillm import MiniLLMForCasualModel
+from cores.minillm import MiniLLMForCasualModel, MiniLLMConfig
 
 import torch
 from torch.utils.data import DataLoader

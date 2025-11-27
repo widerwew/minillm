@@ -94,7 +94,7 @@ class MiniLLMForCasualModel(PreTrainedModel, GenerationMixin):
     config_class = MiniLLMConfig
     base_model_prefix = "minillm"
     supports_gradient_checkpointing = True
-    def __init__(self, config:MiniLLMConfig, loss_fn=nn.CrossEntropyLoss()):
+    def __init__(self, config:MiniLLMConfig, loss_fn=nn.CrossEntropyLoss(reduction="none")):
         super().__init__()
         self.config = config
         self.model = MiniLLM(config)
@@ -111,15 +111,15 @@ class MiniLLMForCasualModel(PreTrainedModel, GenerationMixin):
         return {"input_ids": input_ids, "past_key_value": past_key_value, "attention_mask": attention_mask, "use_cached": kwargs.get("use_cached")}
 
 
-    def forward(self, input_ids, attention_mask=None, past_key_values=None, use_cached=False, labels=None, loss_mask=None, **kwargs):
+    def forward(self, input_ids, attention_mask=None, past_key_values=None, use_cached=False, labels=None, mask_loss=None, **kwargs):
         hidden_states, attn_outputs = self.model(input_ids, attention_mask, past_key_values, use_cached)
         # logits.shape is [batch_size, seq_len, vocabulary]
         logits = self.lm_head(hidden_states)
 
         loss = None
         if labels is not None:
-            loss = self.loss_fn(logits, labels)
-            loss = (loss * loss_mask).sum() / loss_mask.sum()
+            loss = self.loss_fn(logits.view(-1, self.config.vocab_size), labels.view(-1)).view(labels.size())
+            loss = (loss * mask_loss).sum() / mask_loss.sum()
 
         return CausalLMOutputWithPast(loss=loss, logits=logits, hidden_states=hidden_states, **kwargs)
 
