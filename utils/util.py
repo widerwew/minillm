@@ -89,10 +89,8 @@ def sinusoidal_positional_encoding(dim, max_len, theta_para=10000, dtype=torch.f
     simu_positional_encoding[:, 1::2] = torch.cos(theta_table)
     return simu_positional_encoding
 
-def apply_rope_position_encoding(x, theta_para=10000):
-    batch_size, token_num, in_dim = x.shape
+def apply_rope_position_encoding(x, simu_pos_embed):
     rope_pos_embeded = torch.zeros_like(x)
-    simu_pos_embed = sinusoidal_positional_encoding(in_dim, max_len=token_num, theta_para=10000, dtype=x.dtype)
     cos_matrix = simu_pos_embed[:, 1::2]
     sin_matrix = simu_pos_embed[:, 0::2]
 

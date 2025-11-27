@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from .util import apply_rope_position_encoding
 
 class Attention(nn.Module):
     def __init__(self, din, dout,  bias=False, causal=True, flash_attention=False, context_length=8192):
@@ -101,7 +102,7 @@ class MultiHeadAttentionByPspp(nn.Module):
 
 #MLA
 class MultiHeadLatentAttention(nn.Module):
-    def __init__(self, heads, din, dout, latent_dim,  bias=False, dropout=0.0):
+    def __init__(self, heads, din, dout, latent_dim, bias=False, dropout=0.0):
         super().__init__()
         self.heads = heads
         self.din = din
@@ -121,7 +122,7 @@ class MultiHeadLatentAttention(nn.Module):
         self.cache_kv = None
         self.ptr_index = 0
 
-    def forward(self, x, use_cache=False):
+    def forward(self, x, use_cache=False, position_embeddings=None, past_key_value=None, attention_mask=None, **kwargs):
         batch_size, token_len, dim = x.shape
         q_state = self.query(x)
         kv_latent = self.latent_layer(x)
@@ -138,9 +139,12 @@ class MultiHeadLatentAttention(nn.Module):
         k_state, v_state = kv_state.view(batch_size, -1, 2, self.dout).permute(2, 0, 1, 3)
 
         q_state = q_state.view(batch_size, token_len, self.heads, self.head_dim).transpose(1, 2)
+        q_state = apply_rope_position_encoding(q_state, position_embeddings[:token_len, :])
+
         k_state = k_state.view(batch_size, -1, self.heads, self.head_dim).transpose(1, 2)
         v_state = v_state.view(batch_size, -1, self.heads, self.head_dim).transpose(1, 2)
 
+        k_state = apply_rope_position_encoding(k_state, position_embeddings[:k_state.shape[-2], :])
         attn_weights = q_state @ k_state.transpose(-2, -1)
 
         #-------------------attn mask----------------------
