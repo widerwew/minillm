@@ -1,4 +1,5 @@
 {
+  "model_name": "minillm_pretrain_model",
   "attn_type": "MultiHeadLatentAttention",
   "head_nums": 16,
   "latent_dim": 128,
@@ -13,5 +14,12 @@
   "num_layers": 16,
   "max_len": 8192,
   "theta_para": 10000,
-  "learning_rate": 1e-4
+  "learning_rate": 1e-4,
+  "batch_size": 16,
+  "num_epochs": 5,
+  "log_step_interval": 100,
+  "seed": 42,
+  "data_path": "",
+  "tokenizer_path": "",
+  "save_path": ""
 }

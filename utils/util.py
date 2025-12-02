@@ -49,6 +49,7 @@ class MOEFFN(nn.Module):
         batch_size, token_num, in_dim = x.shape
         scores = self.gate(x)
         topk_scores, topk_index= scores.topk(self.experts_per_token)
+        topk_scores = topk_scores.view(batch_size, token_num, self.experts_per_token).softmax(dim=-1)
         out_moe = torch.zeros(batch_size * token_num, in_dim, device=x.device, dtype=x.dtype)
         topk_index = topk_index.reshape(batch_size * token_num, self.experts_per_token)
         topk_scores = topk_scores.reshape(batch_size * token_num, self.experts_per_token)
