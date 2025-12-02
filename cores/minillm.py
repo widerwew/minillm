@@ -16,7 +16,7 @@ from utils.attentions import MultiHeadLatentAttention, MultiHeadAttentionByPspp
 
 
 class MiniLLMConfig(PretrainedConfig):
-    def __init__(self, config_path, **kwargs):
+    def __init__(self, config_path=None, **kwargs):
         super().__init__(**kwargs)
         self.config_path = config_path
         with open(config_path, 'r', encoding='utf-8') as f:
