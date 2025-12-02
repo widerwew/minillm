@@ -1,16 +1,12 @@
-import argparse
-import math
 import os
 import sys
 import time
-
-from minillm.utils.injector import cleanup_dist_model
 
 sys.path[0] = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 from datasets.dataset import PretrainedDataset
 from cores.minillm import MiniLLMForCasualModel, MiniLLMConfig
-from utils.injector import init_trainer_mode, init_logger, get_lr
+from utils.injector import init_trainer_mode, init_logger, get_lr, cleanup_dist_model
 
 import torch
 from torch.amp import autocast, GradScaler
@@ -130,6 +126,8 @@ def trainer(logger, mini_config, mini_model, data_loader, tokenizer, optimizer, 
                 # 保存模型
                 try:
                     mini_model.eval()
+                    if not os.path.exists(mini_config.save_path):
+                        os.makedirs(mini_config.save_path)
                     model_to_save = mini_model.module if isinstance(mini_model, DDP) else mini_model
                     model_to_save.save_pretrained(mini_config.save_path, safe_serializer=False)
                     tokenizer.save_pretrained(mini_config.save_path)
@@ -151,7 +149,7 @@ def trainer(logger, mini_config, mini_model, data_loader, tokenizer, optimizer, 
 if __name__ == "__main__":
     mini_config_path = "../configs/minillm_config.json"
     rank, world_size = init_trainer_mode()
-    logger, mini_config, mini_model, data_loader, tokenizer, optimizer, scaler, device=init_trainer(rank, world_size, mini_config_path=)
+    logger, mini_config, mini_model, data_loader, tokenizer, optimizer, scaler, device=init_trainer(rank, world_size, mini_config_path=mini_config_path)
     trainer(logger, mini_config, mini_model, data_loader, tokenizer, optimizer, scaler, device, rank, world_size)
 
 
