@@ -16,12 +16,24 @@ from utils.attentions import MultiHeadLatentAttention, MultiHeadAttentionByPspp
 
 
 class MiniLLMConfig(PretrainedConfig):
+    model_type = "minillm"
+    DEFAULT_CONFIG = {
+          "model_name": "",
+          "data_path": "",
+          "tokenizer_path": "",
+          "save_path": ""
+    }
+
     def __init__(self, config_path=None, **kwargs):
-        super().__init__(**kwargs)
+        if config_path is None:
+            self.config = {**self.DEFAULT_CONFIG, **kwargs}
+        else:
+            with open(config_path, "r") as f:
+                config_file = json.load(f)
+                self.config = { **config_file, **self.DEFAULT_CONFIG, **kwargs}
+        super().__init__(**self.config)
         self.config_path = config_path
-        with open(config_path, 'r', encoding='utf-8') as f:
-            self.config = json.load(f)
-            self.init()
+        self.init()
 
     def init(self):
         for k, v in self.config.items():
