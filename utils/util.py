@@ -90,17 +90,22 @@ def sinusoidal_positional_encoding(dim, max_len, theta_para=10000, dtype=torch.f
     simu_positional_encoding[:, 1::2] = torch.cos(theta_table)
     return simu_positional_encoding
 
-def apply_rope_position_encoding(x, simu_pos_embed):
+def apply_rope_position_encoding(x, simu_pos_embed, unsqueeze_dim=None):
+    # batch, token_num, heads, head_dim
+    print(x.shape, simu_pos_embed.shape)
     rope_pos_embeded = torch.zeros_like(x)
-    cos_matrix = simu_pos_embed[:, 1::2]
-    sin_matrix = simu_pos_embed[:, 0::2]
+    if unsqueeze_dim != None:
+        simu_pos_embed = simu_pos_embed.unsqueeze(unsqueeze_dim)
+    cos_matrix = simu_pos_embed[..., 1::2]
+    sin_matrix = simu_pos_embed[..., 0::2]
 
     x_odd = x[..., 0::2]
     x_even = x[..., 1::2]
 
     # 旋转操作
     rope_pos_embeded[..., 0::2] = x_odd * cos_matrix - x_even * sin_matrix
-    rope_pos_embeded[..., 1::2] = x_odd * cos_matrix + x_even * sin_matrix
+    rope_pos_embeded[..., 1::2] = x_odd * sin_matrix + x_even * cos_matrix
+
     return rope_pos_embeded
 
 

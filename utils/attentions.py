@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from .util import apply_rope_position_encoding
+from .util import apply_rope_position_encoding, sinusoidal_positional_encoding
 
 class Attention(nn.Module):
     def __init__(self, din, dout,  bias=False, causal=True, flash_attention=False, context_length=8192):
@@ -14,12 +14,15 @@ class Attention(nn.Module):
             # 这里注意mask不能设置和din的维度一致，因为q x k后维度只和token有关系
             self.register_buffer('causal_mask', torch.tril(torch.ones(context_length, context_length), diagonal=0))
 
-    def forward(self, x):
+    def forward(self, x, position_embedding=None):
         # x.shape is batch, token, din
         batch_size, token_len, dim = x.shape
         query = self.querys(x)
         key = self.keys(x)
         value = self.values(x)
+        # add position embedding
+        query = apply_rope_position_encoding(query, position_embedding, unsqueeze_dim=None)
+        key = apply_rope_position_encoding(key, position_embedding, unsqueeze_dim=None)
 
         attn_weights = query @ key.transpose(-2, -1)
 
@@ -52,15 +55,22 @@ class MultiHeadAttention(nn.Module):
             self.register_buffer("causal_mask", torch.tril(torch.ones(context_length, context_length), diagonal=0))
 
 
-    def forward(self, x):
+    def forward(self, x, position_embedding=None):
         batch_size, token_len, dim = x.shape
         query = self.querys(x)
         key = self.keys(x)
         value = self.values(x)
 
         # batch_size, token_len, dim ----> batch_size, heads, token_len, head_dim
-        query = query.view(batch_size, token_len, self.heads, self.head_dim).transpose(1, 2)
-        key = key.view(batch_size, token_len, self.heads, self.head_dim).transpose(1, 2)
+        query = query.view(batch_size, token_len, self.heads, self.head_dim)
+        key = key.view(batch_size, token_len, self.heads, self.head_dim)
+
+        # add position_embedding
+        query = apply_rope_position_encoding(query, position_embedding, unsqueeze_dim=1)
+        key = apply_rope_position_encoding(key, position_embedding, unsqueeze_dim=1)
+
+        query = query.transpose(1, 2)
+        key = key.transpose(1, 2)
         value = value.view(batch_size, token_len, self.heads, self.head_dim).transpose(1, 2)
 
         attn_weights = query @ key.transpose(3, 2)
@@ -87,14 +97,23 @@ class MultiHeadAttentionByPspp(nn.Module):
         self.dropout = dropout
         self.proj = nn.Linear(self.dout, self.dout, bias=bias)
 
-    def forward(self, x):
+    def forward(self, x, position_embedding=None):
         batch_size, token_len, dim = x.shape
         qkv = self.qkv(x)
         qkv = qkv.view(batch_size, token_len, 3, self.heads, self.head_dim)
 
-        # batch_size, token_len, 3, heads, head_dim ---> 3, batch_size, heads, token_len, head_dim
-        qkv = qkv.permute(2, 0, 3, 1, 4).contiguous()
+        # batch_size, token_len, 3, heads, head_dim ---> 3, batch_size, token_len, heads, head_dim
+        qkv = qkv.permute(2, 0, 1, 3, 4).contiguous()
+        # batch_size, token_len, heads, head_dim
         query, key, value = qkv
+        # add position embedding
+        query = apply_rope_position_encoding(query, position_embedding, unsqueeze_dim=1)
+        key = apply_rope_position_encoding(key, position_embedding, unsqueeze_dim=1)
+
+        query = query.transpose(1, 2)
+        key = key.transpose(1, 2)
+        value = value.transpose(1, 2)
+
         attention_scores = nn.functional.scaled_dot_product_attention(query, key, value, dropout_p=self.dropout, is_causal=True, attn_mask=None)
         attention_scores = attention_scores.transpose(2, 1).contiguous().view(batch_size, token_len, -1)
         attention_scores = self.proj(attention_scores)
@@ -189,14 +208,22 @@ class MultiQueryAttention(nn.Module):
         if self.causal:
             self.register_buffer("causal_mask", torch.triu(torch.ones(context_length, context_length), diagonal=1))
 
-    def forward(self, x):
+    def forward(self, x, position_embeddings=None):
         batch_size, token_len, dim = x.shape
         query = self.querys(x)
+
+        # batch_size, token_len, head_dim
         key = self.keys(x)
         value = self.values(x)
 
         #batch_size, token_len, heads, head_dim ---> batch_size, heads, token_len, head_dim
-        query = query.view(batch_size, token_len, self.heads, self.head_dim).transpose(1, 2)
+        query = query.view(batch_size, token_len, self.heads, self.head_dim)
+        #add position_embedding
+        query = apply_rope_position_encoding(query, position_embeddings, unsqueeze_dim=1)
+        key = apply_rope_position_encoding(key, position_embeddings, unsqueeze_dim=None)
+
+        # ---> batch_size, heads, token_len, head_dim
+        query = query.transpose(1, 2)
         attention_scores = query @ key.transpose(-2, -1)
         if self.causal:
             attention_scores.masked_fill(self.causal_mask[:token_len, :token_len].bool(), float('-inf'))
@@ -233,14 +260,22 @@ class GroupQueryAttention(nn.Module):
         if self.causal:
             self.register_buffer("causal_mask", torch.triu(torch.ones(context_length, context_length), diagonal=1))
 
-    def forward(self, x):
+    def forward(self, x, position_embeddings=None):
         batch_size, token_len, dim = x.shape
         query = self.querys(x)
         key = self.keys(x)
         value = self.values(x)
-        query = query.view(batch_size, token_len, self.groups, self.head_nums_per_group, self.head_dim).permute(0, 2, 3, 1, 4).contiguous()
+        query = query.view(batch_size, token_len, self.groups, self.head_nums_per_group, self.head_dim)
         key = key.view(batch_size, token_len, self.groups, self.head_dim).transpose(1, 2)
         value = value.view(batch_size, token_len, self.groups, self.head_dim).transpose(1, 2)
+
+
+        # add position embeddings
+        query = query.permute(0, 2, 1, 3, 4).contiguous()
+        print("query", query.shape)
+        query = apply_rope_position_encoding(query, position_embeddings, unsqueeze_dim=1)
+        query = query.transpose(-2, -3)
+        key = apply_rope_position_encoding(key, position_embeddings, unsqueeze_dim=None)
 
         attention_scores = query @ key.transpose(-2, -1).unsqueeze(2)
         if self.causal:
@@ -261,39 +296,36 @@ if __name__ == "__main__":
     import time
     multi_head_attn = Attention(128, 256, causal=False, flash_attention=False, context_length=512)
     data = torch.randn(1, 11, 128)
+    position_embedding = sinusoidal_positional_encoding(256, 11)
     time_start = time.time()
-    res = multi_head_attn(data)
+    res = multi_head_attn(data, position_embedding)
     end = time.time()
     print(f"Attention cost time: {round((end - time_start)*1000, 2)}ms")
     print(res.shape)
 
-    attn = torch.randn(5, 5)
-    triu_data = torch.triu(torch.ones(5, 5), diagonal=1).bool()
-    print(triu_data)
-    attn = attn.masked_fill(triu_data, float('-inf'))
-    attn = attn.softmax(dim=-1)
-    print(attn)
-
     multi_head_attn = MultiHeadAttentionByPspp(8,128, 256)
     data = torch.randn(1, 11, 128)
+    position_embedding = sinusoidal_positional_encoding(256//8, 11)
     time_start = time.time()
-    res = multi_head_attn(data)
+    res = multi_head_attn(data, position_embedding)
     end = time.time()
     print(f"MultiHeadAttentionByPspp cost time: {round((end - time_start) * 1000, 2)}ms")
     print(res.shape)
 
     multi_head_attn = MultiQueryAttention(8, 128, 256)
     data = torch.randn(1, 11, 128)
+    position_embedding = sinusoidal_positional_encoding(256//8, 11)
     time_start = time.time()
-    res = multi_head_attn(data)
+    res = multi_head_attn(data, position_embedding)
     end = time.time()
     print(f"MultiQueryAttention cost time: {round((end - time_start) * 1000, 2)}ms")
     print(res.shape)
 
     multi_head_attn = GroupQueryAttention(2, 8, 128, 256)
     data = torch.randn(1, 12, 128)
+    position_embedding = sinusoidal_positional_encoding(256 // 8, 12)
     time_start = time.time()
-    res = multi_head_attn(data)
+    res = multi_head_attn(data, position_embedding)
     end = time.time()
     print(f"GroupQueryAttention cost time: {round((end - time_start) * 1000, 2)}ms")
     print(res.shape)

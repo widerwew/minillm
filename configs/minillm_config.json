@@ -1,6 +1,6 @@
 {
   "model_name": "minillm_pretrain_model",
-  "attn_type": "MultiHeadLatentAttention",
+  "attn_type": "MultiHeadAttentionByPspp",
   "head_nums": 16,
   "latent_dim": 128,
   "eps": 1e-9,

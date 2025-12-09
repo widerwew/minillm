@@ -108,7 +108,7 @@ def trainer(logger, mini_config, mini_model, data_loader, tokenizer, optimizer, 
                                     Loss: {loss.item():.4f} \
                                     Lr: {lr:.7f} \
                                     Time/Step: {average_time_step} \
-                                    Est Time: {remaining_time_step:.2f} \
+                                    Est Time: {remaining_time_step:.2f}min \
                                     GPU: {gem_memory:.2f} / {gpu_total_memory:.2f}")
                 except RuntimeError as e:
                     logger.error(f"Step: {step} RuntimeError: {str(e)}")
