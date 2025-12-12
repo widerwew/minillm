@@ -19,6 +19,7 @@ class MiniLLMConfig(PretrainedConfig):
     model_type = "minillm"
     DEFAULT_CONFIG = {
           "model_name": "",
+          "intermediate_size": None,
           "data_path": "",
           "tokenizer_path": "",
           "save_path": ""
@@ -48,11 +49,11 @@ class MiniLLMBlock(nn.Module):
 
     def forward(self, x, position_embeddings=None, attention_mask=None, use_cache=False, past_key_values=None, **kwargs):
         residual = x
-        norm1 = self.norm1(x)
-        attn, past_key_values = self.attn(norm1, position_embeddings=position_embeddings, attention_mask=attention_mask, use_cache=use_cache, past_key_values=past_key_values, **kwargs)
+        norm = self.norm(x)
+        attn, past_key_values = self.attn(norm, position_embeddings=position_embeddings, attention_mask=attention_mask, use_cache=use_cache, past_key_values=past_key_values, **kwargs)
         attn = attn + residual
-        norm2 = self.after_attn_norm(attn)
-        mlp = self.mlp(norm2)
+        after_attn_norm = self.after_attn_norm(attn)
+        mlp = self.mlp(after_attn_norm)
         out = mlp + attn
         return out, past_key_values
 
@@ -88,8 +89,8 @@ class MiniLLM(nn.Module):
         # 这里可以减少position的长度，根据缓存判断
         attn_outputs = []
         for layer_id, attn in enumerate(self.attn_layers):
-            hidden_states, past_key_values = attn(hidden_states, position_embeddings=position_embeddings, attention_mask=attention_mask, use_cache=use_cache, past_key_values=past_key_values[layer_id], **kwargs)
-            attn_outputs.append(past_key_values)
+            hidden_states, past_key_value = attn(hidden_states, position_embeddings=position_embeddings, attention_mask=attention_mask, use_cache=use_cache, past_key_values=past_key_values[layer_id], **kwargs)
+            attn_outputs.append(past_key_value)
         hidden_states = self.layer_norm(hidden_states)
         return hidden_states, attn_outputs
 
@@ -98,15 +99,15 @@ class MiniLLMForCasualModel(PreTrainedModel, GenerationMixin):
     base_model_prefix = "minillm"
     supports_gradient_checkpointing = True
     def __init__(self, config:MiniLLMConfig):
-        super().__init__()
+        super().__init__(config)
         self.config = config
         self.model = MiniLLM(config)
         # lm_head   必须要有的
         self.lm_head = nn.Linear(self.config.hidden_dim, self.config.vocab_size)
         self.lm_head.weight = self.model.embed.weight
 
-    def forward(self, input_ids, attention_mask=None, use_cache=False, past_key_values=None, logits_to_keep=0, return_dict=False, **kwargs):
-        hidden_states, attn_outputs = self.model(input_ids, attention_mask=attention_mask, use_cache=use_cache, past_key_values=past_key_values, **kwargs)
+    def forward(self, input_ids, attention_mask=None, use_cache=False, past_key_values=None, logits_to_keep=0, return_dict=True, **kwargs):
+        hidden_states, past_key_values = self.model(input_ids, attention_mask=attention_mask, use_cache=use_cache, past_key_values=past_key_values, **kwargs)
         #use_cache is True, logits_to_keep will be 1, then just the final token will be predicted.
         slice_index = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         # logits.shape is [batch_size, seq_len, vocabulary]

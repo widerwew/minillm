@@ -56,7 +56,7 @@ def init_trainer(rank, world_size, mini_config_path, log_file="train.log"):
 def trainer(logger, mini_config, mini_model, data_loader, tokenizer, optimizer, scaler, device, rank, world_size):
     epochs = mini_config.num_epochs
     batch_size = mini_config.batch_size
-    loss_fn = torch.nn.CrossEntropyLoss("none")
+    loss_fn = torch.nn.CrossEntropyLoss(reduction="none")
     # 打印设备模型配置信息
     if rank == 0:
         total_parameter = sum(p.numel() for p in mini_model.parameters() if p.requires_grad)
@@ -76,7 +76,7 @@ def trainer(logger, mini_config, mini_model, data_loader, tokenizer, optimizer, 
         if rank == 0:
             start_time = time.time()
         for epoch in range(epochs):
-            epoch_start_time = start_time
+            epoch_start_time = time.time()
             for step, (X, Y, mask_loss) in enumerate(data_loader):
                 try:
                     X = X.to(device)
@@ -106,12 +106,7 @@ def trainer(logger, mini_config, mini_model, data_loader, tokenizer, optimizer, 
 
                         gem_memory = torch.cuda.memory_allocated() / 1e9
                         gpu_total_memory = torch.cuda.get_device_properties(rank).total_memory / 1e9
-                        logger.info(f"Epoch: [{epoch + 1} / {epochs}] [{current_step}/{total_steps}] \
-                                    Loss: {loss.item():.4f} \
-                                    Lr: {lr:.7f} \
-                                    Time/Step: {average_time_step} \
-                                    Est Time: {remaining_time_step:.2f}min \
-                                    GPU: {gem_memory:.2f} / {gpu_total_memory:.2f}")
+                        logger.info(f"Epoch: [{epoch + 1}/{epochs}] [{current_step}/{total_steps}] Loss: {loss.item():.4f} Lr: {lr:.7f} Time/Step: {average_time_step} Est Time: {remaining_time_step:.2f}min GPU: {gem_memory:.2f} / {gpu_total_memory:.2f}")
                 except RuntimeError as e:
                     logger.error(f"Step: {step} RuntimeError: {str(e)}")
                     if "out of memory" in str(e).lower():

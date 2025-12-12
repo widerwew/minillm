@@ -34,7 +34,7 @@ class FFN(nn.Module):
             self.intermediate_size = config.intermediate_size
         else:
             if config.intermediate_ratio is not None:
-                if config.itermediate_ratio < 2 or config.itermediate_ratio > 4:
+                if config.intermediate_ratio < 2 or config.intermediate_ratio > 4:
                     raise ValueError("intermediate_ratio must be between 2 and 4")
                 intermediate_size = int(config.hidden_dim * config.intermediate_ratio)
                 config.intermediate_size = (intermediate_size // 64) * 64
