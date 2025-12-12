@@ -69,6 +69,7 @@ class MultiHeadAttention(nn.Module):
         query = apply_rope_position_encoding(query, position_embedding, unsqueeze_dim=1)
         key = apply_rope_position_encoding(key, position_embedding, unsqueeze_dim=1)
 
+
         query = query.transpose(1, 2)
         key = key.transpose(1, 2)
         value = value.view(batch_size, token_len, self.heads, self.head_dim).transpose(1, 2)
@@ -97,7 +98,7 @@ class MultiHeadAttentionByPspp(nn.Module):
         self.dropout = dropout
         self.proj = nn.Linear(self.dout, self.dout, bias=bias)
 
-    def forward(self, x, position_embedding=None):
+    def forward(self, x, position_embeddings=None, use_cache=False, past_key_values=None, **kwargs):
         batch_size, token_len, dim = x.shape
         qkv = self.qkv(x)
         qkv = qkv.view(batch_size, token_len, 3, self.heads, self.head_dim)
@@ -107,17 +108,26 @@ class MultiHeadAttentionByPspp(nn.Module):
         # batch_size, token_len, heads, head_dim
         query, key, value = qkv
         # add position embedding
-        query = apply_rope_position_encoding(query, position_embedding, unsqueeze_dim=1)
-        key = apply_rope_position_encoding(key, position_embedding, unsqueeze_dim=1)
+        query = apply_rope_position_encoding(query, position_embeddings, unsqueeze_dim=1)
+        key = apply_rope_position_encoding(key, position_embeddings, unsqueeze_dim=1)
+
+        if past_key_values is not None:
+            key = torch.cat([past_key_values[0], key], dim=1)
+            value = torch.cat([past_key_values[1], value], dim=1)
+            past_key_values = (key, value)
+        if use_cache:
+            past_key_values = (key, value)
+        else:
+            past_key_values = None
 
         query = query.transpose(1, 2)
         key = key.transpose(1, 2)
         value = value.transpose(1, 2)
 
-        attention_scores = nn.functional.scaled_dot_product_attention(query, key, value, dropout_p=self.dropout, is_causal=True, attn_mask=None)
+        attention_scores = nn.functional.scaled_dot_product_attention(query, key, value, dropout_p=self.dropout if self.training else 0.0, is_causal=past_key_values is None, attn_mask=None)
         attention_scores = attention_scores.transpose(2, 1).contiguous().view(batch_size, token_len, -1)
         attention_scores = self.proj(attention_scores)
-        return attention_scores
+        return attention_scores, past_key_values
 
 #MLA
 class MultiHeadLatentAttention(nn.Module):

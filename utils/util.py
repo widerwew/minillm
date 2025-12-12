@@ -3,11 +3,11 @@ import torch
 import torch.nn as nn
 
 class LayerNorm(nn.Module):
-    def __init__(self, dim, eps=1e-6):
+    def __init__(self, config):
         super().__init__()
-        self.eps = eps
-        self.bias = nn.Parameter(torch.zeros(dim))
-        self.weight = nn.Parameter(torch.ones(dim))
+        self.eps = config.eps
+        self.bias = nn.Parameter(torch.zeros(config.hidden_dim))
+        self.weight = nn.Parameter(torch.ones(config.hidden_dim))
 
     def forward(self, x):
         mean = x.mean(dim=-1, keepdim=True)
@@ -16,26 +16,40 @@ class LayerNorm(nn.Module):
 
 
 class RMSNorm(nn.Module):
-    def __init__(self, dim, eps=1e-6):
+    def __init__(self, config):
         super().__init__()
-        self.eps = eps
-        self.weight = nn.Parameter(torch.ones(dim))
+        self.eps = config.eps
+        self.weight = nn.Parameter(torch.ones(config.hidden_dim))
 
     def forward(self, x):
-        norm = x.pow(2).sum(-1, keepdim=True).sqrt()
+        norm = x.pow(2).mean(-1, keepdim=True).sqrt()
         return x / (norm + self.eps) * self.weight
 
 
 class FFN(nn.Module):
-    def __init__(self, in_dim, hidden_dim, bias=False):
+    def __init__(self, config):
         super().__init__()
-        self.fc1 = nn.Linear(in_dim, hidden_dim, bias=bias)
-        self.fc2 = nn.Linear(in_dim, hidden_dim, bias=bias)
-        self.fc3 = nn.Linear(hidden_dim, in_dim, bias=bias)
+        # handle the config.intermediate
+        if config.intermediate_size is not None:
+            self.intermediate_size = config.intermediate_size
+        else:
+            if config.intermediate_ratio is not None:
+                if config.itermediate_ratio < 2 or config.itermediate_ratio > 4:
+                    raise ValueError("intermediate_ratio must be between 2 and 4")
+                intermediate_size = int(config.hidden_dim * config.intermediate_ratio)
+                config.intermediate_size = (intermediate_size // 64) * 64
+                self.intermediate_size = config.intermediate_size
+            else:
+                assert config.intermediate_size is not None or config.intermediate_ratio is not None, "You must provide intermediate size or intermediate_ratio!"
+
+        self.gate = nn.Linear(config.hidden_dim, config.intermediate_size, bias=False)
+        self.up_proj = nn.Linear(config.hidden_dim, config.intermediate_size, bias=False)
+        self.down_proj = nn.Linear(config.intermediate_size, config.hidden_dim, bias=False)
+        self.dropout = nn.Dropout(config.dropout)
 
     def forward(self, x):
-        gate = nn.functional.silu(self.fc1(x))
-        return self.fc3(gate * self.fc2(x))
+        gate = nn.functional.silu(self.gate(x))
+        return self.dropout(self.down_proj(gate * self.up_proj(x)))
 
 class MOEFFN(nn.Module):
     def __init__(self, expert_nums, experts_per_token, in_dim, hidden_dim, bias=False):

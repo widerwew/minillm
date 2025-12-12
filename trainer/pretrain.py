@@ -16,7 +16,7 @@ from transformers import AutoTokenizer
 import torch.distributed as dist
 
 
-def init_trainer(world_size, rank, mini_config_path, log_file="train.log"):
+def init_trainer(rank, world_size, mini_config_path, log_file="train.log"):
     #初始化日志
     logger = init_logger(rank, log_file)
 
@@ -38,7 +38,7 @@ def init_trainer(world_size, rank, mini_config_path, log_file="train.log"):
 
     # dist模式适配
     if world_size > 1:
-        sampler = DistributedSampler(world_size, num_replicas=world_size, rank=rank, shuffle=True, seed=mini_config.seed)
+        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True, seed=mini_config.seed)
         shuffle = False
         mini_model = DDP(mini_model, device_ids=[rank], output_device=rank,  find_unused_parameters=False, broadcast_buffers=False, static_graph=False, gradient_as_bucket_view=True)
     else:
@@ -56,13 +56,13 @@ def init_trainer(world_size, rank, mini_config_path, log_file="train.log"):
 def trainer(logger, mini_config, mini_model, data_loader, tokenizer, optimizer, scaler, device, rank, world_size):
     epochs = mini_config.num_epochs
     batch_size = mini_config.batch_size
+    loss_fn = torch.nn.CrossEntropyLoss("none")
     # 打印设备模型配置信息
     if rank == 0:
         total_parameter = sum(p.numel() for p in mini_model.parameters() if p.requires_grad)
         logger.info(f"Training {mini_config.model_name} ....")
         logger.info(f"GPU名称: {torch.cuda.get_device_name(rank)}")
-        logger.info(f"GPU内存：{torch.cuda.get_device_properties(rank) / 1e9:.2f}")
-        logger.info(f"CUDA版本： {torch.cuda.version()}")
+        logger.info(f"GPU内存：{torch.cuda.get_device_properties(rank).total_memory / 1e9:.2f}")
         logger.info(f"GPU卡数：{world_size}")
         logger.info(f"RANK ID: {rank}")
         logger.info(f"可训练参数：{total_parameter / 1e6:.2f} 百万")
@@ -88,8 +88,10 @@ def trainer(logger, mini_config, mini_model, data_loader, tokenizer, optimizer, 
                         param_group['lr'] = lr
                     optimizer.zero_grad()
                     with autocast(device_type="cuda"):
-                        output = mini_model(X, Y, mask_loss)
-                        loss = output.loss
+                        output = mini_model(X)
+                        loss = loss_fn(output.logits.view(-1, output.logits.size(-1)), Y.view(-1)).view(Y.size())
+                        loss = (loss * mask_loss).sum() / mask_loss.sum()
+                        loss += output.aux_loss
                     scaler.scale(loss).backward()
                     scaler.unscale_(optimizer)
                     torch.nn.utils.clip_grad_norm_(mini_model.parameters(), 1.0)
@@ -97,7 +99,7 @@ def trainer(logger, mini_config, mini_model, data_loader, tokenizer, optimizer, 
                     scaler.update()
 
                     # 打印训练日志
-                    if rank == 0 and (step % mini_config.log_step_interval == 0 or step == total_steps - 1):
+                    if (rank == 0 and step!=0) and (step % mini_config.log_step_interval == 0 or step == total_steps - 1):
                         spent_time = time.time() - start_time
                         average_time_step = spent_time / current_step
                         remaining_time_step = (total_steps - current_step) * average_time_step / 60
@@ -129,7 +131,7 @@ def trainer(logger, mini_config, mini_model, data_loader, tokenizer, optimizer, 
                     if not os.path.exists(mini_config.save_path):
                         os.makedirs(mini_config.save_path)
                     model_to_save = mini_model.module if isinstance(mini_model, DDP) else mini_model
-                    model_to_save.save_pretrained(mini_config.save_path, safe_serializer=False)
+                    model_to_save.save_pretrained(mini_config.save_path, safe_serialization=False)
                     tokenizer.save_pretrained(mini_config.save_path)
                     mini_model.train()
                     logger.info(f"Saved model to path: {mini_config.save_path}.")

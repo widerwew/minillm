@@ -10,7 +10,7 @@ def init_trainer_mode():
         rank = int(os.environ["RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
         master_addr = os.environ.get("MASTER_ADDR", "localhost")
-        master_port = int(os.environ.get("MASTER_PORT", "29500"))
+        master_port = os.environ.get("MASTER_PORT", "29500")
         os.environ["MASTER_ADDR"] = master_addr
         os.environ["MASTER_PORT"] = master_port
         os.environ["NCCL_DEBUG"] = "INFO"

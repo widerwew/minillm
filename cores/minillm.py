@@ -26,79 +26,70 @@ class MiniLLMConfig(PretrainedConfig):
 
     def __init__(self, config_path=None, **kwargs):
         if config_path is None:
-            self.config = {**self.DEFAULT_CONFIG, **kwargs}
+            config = {**self.DEFAULT_CONFIG, **kwargs}
         else:
             with open(config_path, "r") as f:
                 config_file = json.load(f)
-                self.config = { **config_file, **self.DEFAULT_CONFIG, **kwargs}
-        super().__init__(**self.config)
-        self.config_path = config_path
-        self.init()
-
-    def init(self):
-        for k, v in self.config.items():
+                config = {**self.DEFAULT_CONFIG, **config_file, **kwargs}
+        for k, v in config.items():
             setattr(self, k, v)
-
+        super().__init__(**config)
+        self.config_path = config_path
 
 class MiniLLMBlock(nn.Module):
     def __init__(self, layer_id, config:MiniLLMConfig):
         super().__init__()
         self.config = config
         self.layer_id = layer_id
-        self.attn = eval(self.config.attn_type)(self.config.head_nums, config.embed_dim, config.embed_dim)
-        self.norm1 = RMSNorm(self.config.embed_dim, self.config.eps)
-        self.norm2 = RMSNorm(self.config.embed_dim, self.config.eps)
-        self.mlp = MOEFFN(self.config.export_nums, self.config.per_token_exports, self.config.embed_dim, self.config.hidden_dim) if self.config.use_moe else FFN(self.config.embed_dim, self.config.hidden_dim)
+        self.attn = MultiHeadAttentionByPspp(self.config.head_nums, config.hidden_dim, config.hidden_dim)
+        self.norm = RMSNorm(config)
+        self.after_attn_norm = RMSNorm(config)
+        self.mlp = MOEFFN(config) if self.config.use_moe else FFN(config)
 
-    def forward(self, x, position_embeddings=None, attention_mask=None, past_key_values=None, use_cached=False, **kwargs):
+    def forward(self, x, position_embeddings=None, attention_mask=None, use_cache=False, past_key_values=None, **kwargs):
         residual = x
         norm1 = self.norm1(x)
-        attn = self.attn(norm1,  position_embeddings)
+        attn, past_key_values = self.attn(norm1, position_embeddings=position_embeddings, attention_mask=attention_mask, use_cache=use_cache, past_key_values=past_key_values, **kwargs)
         attn = attn + residual
-        norm2 = self.norm2(attn)
+        norm2 = self.after_attn_norm(attn)
         mlp = self.mlp(norm2)
         out = mlp + attn
-        return out
-
+        return out, past_key_values
 
 class MiniLLM(nn.Module):
     def __init__(self, config:MiniLLMConfig):
         super().__init__()
         self.config = config
-        self.embed = nn.Embedding(config.vocab_size, config.embed_dim)
-        self.attn_layers = nn.ModuleList([MiniLLMBlock(i, self.config) for i in range(self.config.num_layers)])
-        self.layer_norm = RMSNorm(self.config.embed_dim)
+        self.embed = nn.Embedding(config.vocab_size, config.hidden_dim)
+        self.attn_layers = nn.ModuleList([MiniLLMBlock(i, self.config) for i in range(self.config.num_hidden_layers)])
+        self.layer_norm = RMSNorm(config)
         self.dropout = nn.Dropout(self.config.dropout)
         if self.config.attn_type in ["Attention"]:
-            positional_embed_dim = self.config.embed_dim
+            positional_embed_dim = self.config.hidden_dim
         else:
-            positional_embed_dim = self.config.embed_dim // self.config.head_nums
+            positional_embed_dim = self.config.hidden_dim // self.config.head_nums
         positional_encoding = sinusoidal_positional_encoding(positional_embed_dim, self.config.max_len, theta_para=self.config.theta_para, dtype=torch.float32)
         self.register_buffer('positional_encoding', positional_encoding, persistent=False)# persistent指是否保存在state_dict中
 
-    def forward(self, input_ids, attention_mask=None, past_key_values=None, use_cached=False, **kwargs):
+    def forward(self, input_ids, attention_mask=None, use_cache=False, past_key_values=None, **kwargs):
         batch_size, token_len = input_ids.shape
         hidden_states = self.dropout(self.embed(input_ids))
-        # if use_cached:
-        #     if past_key_values is None:
-        #         start_pos = 0
-        #     elif isinstance(past_key_values, DynamicCache):
-        #         if past_key_values.layers[0].values is None:
-        #             start_pos = 0
-        #         else:
-        #             start_pos = len(past_key_values.layers)
-        #     elif isinstance(past_key_values, torch.Tensor):
-        #         start_pos = past_key_values.shape[0]
-        #     else:
-        #         start_pos = 0
-        # else:
-        #     start_pos = 0
+
+        if hasattr(past_key_values, "layers"): past_key_values = None
+        if past_key_values is not None:
+            start_positions = past_key_values[0][0].shape[1]
+        else:
+            past_key_values = [None] * self.config.num_hidden_layers
+            start_positions = 0
+
+        # add position embedding
+        position_embeddings = self.positional_encoding[start_positions:start_positions + token_len]
 
         # 这里可以减少position的长度，根据缓存判断
         attn_outputs = []
         for layer_id, attn in enumerate(self.attn_layers):
-            hidden_states = attn(hidden_states, position_embeddings=self.positional_encoding)
-            attn_outputs.append(hidden_states)
+            hidden_states, past_key_values = attn(hidden_states, position_embeddings=position_embeddings, attention_mask=attention_mask, use_cache=use_cache, past_key_values=past_key_values[layer_id], **kwargs)
+            attn_outputs.append(past_key_values)
         hidden_states = self.layer_norm(hidden_states)
         return hidden_states, attn_outputs
 
@@ -106,50 +97,27 @@ class MiniLLMForCasualModel(PreTrainedModel, GenerationMixin):
     config_class = MiniLLMConfig
     base_model_prefix = "minillm"
     supports_gradient_checkpointing = True
-    def __init__(self, config:MiniLLMConfig, loss_fn=nn.CrossEntropyLoss(reduction="none")):
+    def __init__(self, config:MiniLLMConfig):
         super().__init__()
         self.config = config
         self.model = MiniLLM(config)
         # lm_head   必须要有的
-        self.lm_head = nn.Linear(self.config.embed_dim, self.config.vocab_size)
+        self.lm_head = nn.Linear(self.config.hidden_dim, self.config.vocab_size)
         self.lm_head.weight = self.model.embed.weight
-        self.loss_fn = loss_fn
 
-    # It's import for causal model, and exec before forward
-    def prepare_inputs_for_generation(self, input_ids, past_key_value=None, attention_mask=None, **kwargs):
-        # 如果有缓存，只取最后一个token输入即可
-        if past_key_value is not None:
-            input_ids = input_ids[:, -1:]
-        return {"input_ids": input_ids, "past_key_value": past_key_value, "attention_mask": attention_mask, "use_cached": kwargs.get("use_cached")}
-
-
-    def forward(self, input_ids, attention_mask=None, past_key_values=None, use_cached=False, labels=None, mask_loss=None, **kwargs):
-        hidden_states, attn_outputs = self.model(input_ids, attention_mask, past_key_values, use_cached)
+    def forward(self, input_ids, attention_mask=None, use_cache=False, past_key_values=None, logits_to_keep=0, return_dict=False, **kwargs):
+        hidden_states, attn_outputs = self.model(input_ids, attention_mask=attention_mask, use_cache=use_cache, past_key_values=past_key_values, **kwargs)
+        #use_cache is True, logits_to_keep will be 1, then just the final token will be predicted.
+        slice_index = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
         # logits.shape is [batch_size, seq_len, vocabulary]
-        logits = self.lm_head(hidden_states)
+        logits = self.lm_head(hidden_states[:, slice_index, :])
 
-        loss = None
-        if labels is not None:
-            loss = self.loss_fn(logits.view(-1, self.config.vocab_size), labels.view(-1)).view(labels.size())
-            loss = (loss * mask_loss).sum() / mask_loss.sum()
+        output = CausalLMOutputWithPast(logits=logits, past_key_values=past_key_values, hidden_states=hidden_states)
 
-        return CausalLMOutputWithPast(loss=loss, logits=logits, hidden_states=hidden_states, **kwargs)
+        # if has other loss such as moe aux loss, you can add loss like this:
+        output.aux_loss = 0
 
-
-if __name__ == '__main__':
-    mini_config = MiniLLMConfig('../configs/minillm_config.json')
-    print("----------miniLLM Model-------------")
-    model = MiniLLM(mini_config)
-    data = torch.randint(0, 6399, size=(1, 13))
-    hidden_states, _ = model(data, use_cached=True)
-    print("LLM hidden_states.shape:", hidden_states.shape)
-
-    print("----------Test Model--------------")
-    layer = nn.Embedding(5, 3)
-    print(layer)
-    print(layer.weight)
-
-    data = torch.randint(0, 4, size=(1, 2))
-    print(data)
-    res = layer(data)
-    print(res)
+        if return_dict:
+            return output
+        else:
+            return (output.logits, past_key_values, hidden_states)
