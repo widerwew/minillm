@@ -106,7 +106,6 @@ def sinusoidal_positional_encoding(dim, max_len, theta_para=10000, dtype=torch.f
 
 def apply_rope_position_encoding(x, simu_pos_embed, unsqueeze_dim=None):
     # batch, token_num, heads, head_dim
-    print(x.shape, simu_pos_embed.shape)
     rope_pos_embeded = torch.zeros_like(x)
     if unsqueeze_dim != None:
         simu_pos_embed = simu_pos_embed.unsqueeze(unsqueeze_dim)

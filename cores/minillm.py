@@ -106,7 +106,7 @@ class MiniLLMForCasualModel(PreTrainedModel, GenerationMixin):
         self.lm_head = nn.Linear(self.config.hidden_dim, self.config.vocab_size)
         self.lm_head.weight = self.model.embed.weight
 
-    def forward(self, input_ids, attention_mask=None, use_cache=False, past_key_values=None, logits_to_keep=0, return_dict=False, **kwargs):
+    def forward(self, input_ids, attention_mask=None, use_cache=False, past_key_values=None, logits_to_keep=0, return_dict=True, **kwargs):
         hidden_states, past_key_values = self.model(input_ids, attention_mask=attention_mask, use_cache=use_cache, past_key_values=past_key_values, **kwargs)
         #use_cache is True, logits_to_keep will be 1, then just the final token will be predicted.
         slice_index = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
