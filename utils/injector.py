@@ -34,7 +34,7 @@ def init_logger(rank, log_file="train.log"):
     logger.setLevel(logging.DEBUG)
     logger.handlers.clear()
 
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - Rank %(rank)d - %(message)s", datefmt="%Y %M %D %H:%M:%S")
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - Rank %(rank)d - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
     class RankFilter(logging.Filter):
         def __init__(self, rank):
