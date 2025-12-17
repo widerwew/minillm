@@ -9,8 +9,10 @@
   "intermediate_ratio": 2.5,
   "vocab_size": 6400,
   "num_hidden_layers": 16,
-  "max_len": 8192,
   "theta_para": 10000,
+
+  "dataset": "PretrainedDataset",
+  "max_length": 8192,
   "learning_rate": 1e-4,
   "batch_size": 16,
   "num_epochs": 5,

@@ -1,17 +1,21 @@
 import ast
+from distutils.command.register import register
+
 import torch
 from torch.utils.data import Dataset
 
 class PretrainedDataset(Dataset):
-    def __init__(self, data_path):
+    def __init__(self, data_path, tokenizer=None, max_length=8192):
         self.data_path = data_path
+        self.tokenizer = tokenizer
+        self.max_length = max_length
         self.samplers = self.load_samplers()
 
     def load_samplers(self):
         samplers = []
         with open(self.data_path, "r", encoding="utf-8") as f:
             lines = f.readlines()
-            for line in lines[:100]:
+            for line in lines:
                 line = line.strip()
                 samplers.append(ast.literal_eval(line))
         return samplers
@@ -23,24 +27,21 @@ class PretrainedDataset(Dataset):
         sampler = self.samplers[idx]
         return sampler
 
-    @staticmethod
-    def collate_fn(batch, tokenizer):
+    def collate_fn(self, batch):
         input_txts = []
         for txt in batch:
             input_txts.append(txt["text"])
 
-        token_result = tokenizer(input_txts, padding=True, truncation=True, return_tensors="pt")
+        token_result = self.tokenizer(input_txts, padding=True, truncation=True, max_length=self.max_length, return_tensors="pt")
         input_ids = token_result["input_ids"]
         X = input_ids[:, :-1]
         Y = input_ids[:, 1:]
-        mask_loss = (X!=tokenizer.pad_token_id)
+        mask_loss = (X!=self.tokenizer.pad_token_id)
         return X, Y, mask_loss
 
 class SFTDataset(PretrainedDataset):
     def __init__(self, data_path, tokenizer=None, max_length=8192):
-        super().__init__(data_path)
-        self.tokenizer = tokenizer
-        self.max_length = max_length
+        super().__init__(data_path, tokenizer=tokenizer, max_length=max_length)
         # 生成开始标志
         self.bos_token = self.tokenizer(f"{tokenizer.bos_token}assistant", add_special_tokens=False)["input_ids"]
         self.bos_token_length = len(self.bos_token)

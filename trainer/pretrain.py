@@ -4,7 +4,7 @@ import time
 
 sys.path[0] = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-from datasets.dataset import PretrainedDataset
+from datasets import register_dataset
 from cores.minillm import MiniLLMForCasualModel, MiniLLMConfig
 from utils.injector import init_trainer_mode, init_logger, get_lr, cleanup_dist_model
 
@@ -16,7 +16,7 @@ from transformers import AutoTokenizer
 import torch.distributed as dist
 
 
-def init_trainer(rank, world_size, mini_config_path, log_file="train.log"):
+def init_trainer(rank, world_size, mini_config_path, log_file="train.log", mode='pretrain'):
     #初始化日志
     logger = init_logger(rank, log_file)
 
@@ -26,15 +26,20 @@ def init_trainer(rank, world_size, mini_config_path, log_file="train.log"):
     #初始化配置文件
     mini_config = MiniLLMConfig(mini_config_path)
 
-    #初始化训练数据
-    dataset = PretrainedDataset(mini_config.data_path)
-
     #初始化模型
     mini_model = MiniLLMForCasualModel(mini_config)
+    if mode != 'pretrain':
+        assert mini_config.model_path is not None, "You must specify a pretrained model when you not in pretrain mode."
+        print(f"Loading model weight from {mini_config.model_path} ...")
+        state_dict = torch.load(f"{mini_config.model_path}/pytorch_model.bin", map_location=device, weights_only=True)
+        mini_model.model.load_state_dict(state_dict)
     mini_model = mini_model.to(device)
 
     # 初始化tokenizer
     tokenizer = AutoTokenizer.from_pretrained(mini_config.tokenizer_path)
+
+    # 初始化训练数据
+    dataset = register_dataset[mini_config.dataset](mini_config.data_path, tokenizer=tokenizer, max_length=mini_config.max_length)
 
     # dist模式适配
     if world_size > 1:
@@ -46,7 +51,7 @@ def init_trainer(rank, world_size, mini_config_path, log_file="train.log"):
         shuffle = True
 
     # 初始化dataloader
-    data_loader = DataLoader(dataset, batch_size=mini_config.batch_size, num_workers=world_size, shuffle=shuffle, sampler=sampler, drop_last=True, pin_memory=True, prefetch_factor=2, collate_fn=lambda X:dataset.collate_fn(X, tokenizer=tokenizer))
+    data_loader = DataLoader(dataset, batch_size=mini_config.batch_size, num_workers=world_size, shuffle=shuffle, sampler=sampler, drop_last=True, pin_memory=True, prefetch_factor=2, collate_fn=dataset.collate_fn)
 
     # 初始化 optimizer
     optimizer = torch.optim.AdamW(mini_model.parameters(), lr=mini_config.learning_rate)
