@@ -34,7 +34,7 @@ class Inference:
     def generate(self, prompt: str, max_new_token=200, temperature=0.7, top_p=0.9, top_k=50, repetition_penalty=1.2) -> str:
         start = time.time()
         prompt = self.tokenizer.bos_token + prompt
-        inputs = self.tokenizer(prompt, return_tensor="pt", truncation=True, max_length=max_new_token+len(prompt), add_special_tokens=False).to(self.device)
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_new_token+len(prompt), add_special_tokens=False).to(self.device)
 
         generated_ids = self.model.generate(inputs=inputs["input_ids"], attention_mask=inputs["attention_mask"], max_length=max_new_token, do_sample=True, temperature=temperature, repetition_penalty=repetition_penalty, top_p=top_p, top_k=top_k, return_dict_in_generate=True, use_cache=True, pad_token_id=self.tokenizer.pad_token_id, eos_token_id=self.tokenizer.eos_token_id)
         token_ids = generated_ids[0].squeeze().tolist()

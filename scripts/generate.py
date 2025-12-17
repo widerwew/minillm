@@ -47,7 +47,7 @@ class Inference:
     def generate(self, prompt: str, max_new_token=200, temperature=0.7, top_p=0.9, top_k=50, repetition_penalty=1.2) -> str:
         start = time.time()
         prompt = self.tokenizer.bos_token + prompt
-        inputs = self.tokenizer(prompt, return_tensor="pt", truncation=True, max_length=max_new_token+len(prompt), add_special_tokens=False).to(self.device)
+        inputs = self.tokenizer(prompt, return_tensors="pt", truncation=True, max_length=max_new_token+len(prompt), add_special_tokens=False).to(self.device)
 
         text = ""
         for token in self.generate_text_basic_stream(inputs["input_ids"], max_new_token, eos_token_ids=self.tokenizer.eos_token_ids):
